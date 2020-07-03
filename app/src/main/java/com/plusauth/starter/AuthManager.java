@@ -2,6 +2,7 @@ package com.plusauth.starter;
 
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -30,7 +31,6 @@ import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
@@ -41,14 +41,15 @@ import okio.Okio;
 public class AuthManager {
 
     public static final int RC_AUTH = 100;
+    public static final int RC_SIGN_OUT = 101;
     private static final String TAG = "AuthManager";
     private final AtomicReference<AuthorizationRequest> mAuthRequest = new AtomicReference<>();
     private final AtomicReference<CustomTabsIntent> mAuthIntent = new AtomicReference<>();
     private final Runnable onReadyCallback;
     private AuthorizationService mAuthService;
     private AuthStateManager mStateManager;
-    private CountDownLatch mAuthIntentLatch = new CountDownLatch(1);
     private ExecutorService mExecutor;
+    private Uri endSessionEndpoint;
 
     @NonNull
     private BrowserMatcher mBrowserMatcher = AnyBrowserMatcher.INSTANCE;
@@ -59,11 +60,11 @@ public class AuthManager {
         mExecutor = Executors.newSingleThreadExecutor();
         mStateManager = AuthStateManager.getInstance(context);
         mAuthService = new AuthorizationService(
-            context,
-            new AppAuthConfiguration.Builder()
-                .setConnectionBuilder(DefaultConnectionBuilder.INSTANCE)
-                .setBrowserMatcher(mBrowserMatcher)
-                .build());
+                context,
+                new AppAuthConfiguration.Builder()
+                        .setConnectionBuilder(DefaultConnectionBuilder.INSTANCE)
+                        .setBrowserMatcher(mBrowserMatcher)
+                        .build());
     }
 
     public void retry(Context context) {
@@ -116,14 +117,14 @@ public class AuthManager {
 
             Log.i(TAG, "Retrieving OpenID discovery doc");
             AuthorizationServiceConfiguration.fetchFromIssuer(
-                Config.AUTH_URI,
-                this::handleConfigurationRetrievalResult);
+                    Config.AUTH_URI,
+                    this::handleConfigurationRetrievalResult);
         });
     }
 
     private void handleConfigurationRetrievalResult(
-        AuthorizationServiceConfiguration config,
-        AuthorizationException ex) {
+            AuthorizationServiceConfiguration config,
+            AuthorizationException ex) {
         if (config == null) {
             throw new RuntimeException("Failed to retrieve discovery document: " + ex.getMessage());
         }
@@ -137,15 +138,9 @@ public class AuthManager {
      * Performs the authorization request
      */
     private void doAuth(AuthenticateListener authenticateListener) {
-        try {
-            mAuthIntentLatch.await();
-        } catch (InterruptedException ex) {
-            Log.w(TAG, "Interrupted while waiting for auth intent");
-        }
-
         Intent intent = mAuthService.getAuthorizationRequestIntent(
-            mAuthRequest.get(),
-            mAuthIntent.get());
+                mAuthRequest.get(),
+                mAuthIntent.get());
         authenticateListener.startActivityForResult(intent, RC_AUTH);
 
     }
@@ -156,41 +151,41 @@ public class AuthManager {
             mAuthService.dispose();
         }
         mAuthService = new AuthorizationService(
-            context,
-            new AppAuthConfiguration.Builder()
-                .setConnectionBuilder(DefaultConnectionBuilder.INSTANCE)
-                .setBrowserMatcher(mBrowserMatcher)
-                .build());
+                context,
+                new AppAuthConfiguration.Builder()
+                        .setConnectionBuilder(DefaultConnectionBuilder.INSTANCE)
+                        .setBrowserMatcher(mBrowserMatcher)
+                        .build());
         mAuthRequest.set(null);
         mAuthIntent.set(null);
     }
 
-    private void warmUpBrowser() {
-        mAuthIntentLatch = new CountDownLatch(1);
-        mExecutor.execute(() -> {
-            Log.i(TAG, "Warming up browser instance for auth request");
-            CustomTabsIntent.Builder intentBuilder =
-                mAuthService.createCustomTabsIntentBuilder(mAuthRequest.get().toUri());
-            mAuthIntent.set(intentBuilder.build());
-            mAuthIntentLatch.countDown();
-        });
+    private CustomTabsIntent warmUpBrowser(Uri uri) {
+        Log.i(TAG, "Warming up browser instance for auth request");
+        CustomTabsIntent.Builder intentBuilder =
+                mAuthService.createCustomTabsIntentBuilder(uri);
+        CustomTabsIntent customTabsIntent = intentBuilder.build();
+
+        customTabsIntent.intent.setData(uri);
+
+        return customTabsIntent;
     }
 
     private void createAuthRequest() {
         Log.i(TAG, "Creating auth request");
         AuthorizationRequest.Builder authRequestBuilder = new AuthorizationRequest.Builder(
-            mStateManager.getCurrent().getAuthorizationServiceConfiguration(),
-            Config.CLIENT_ID,
-            ResponseTypeValues.CODE,
-            Config.REDIRECT_URI)
-            .setScope(Config.SCOPE);
+                mStateManager.getCurrent().getAuthorizationServiceConfiguration(),
+                Config.CLIENT_ID,
+                ResponseTypeValues.CODE,
+                Config.REDIRECT_URI)
+                .setScope(Config.SCOPE);
 
         mAuthRequest.set(authRequestBuilder.build());
     }
 
     private void initializeAuthRequest() {
         createAuthRequest();
-        warmUpBrowser();
+        mAuthIntent.set(warmUpBrowser(mAuthRequest.get().toUri()));
         onReadyCallback.run();
     }
 
@@ -227,27 +222,27 @@ public class AuthManager {
 
     public void refreshAccessToken(AuthorizationService.TokenResponseCallback callback) {
         performTokenRequest(
-            mStateManager.getCurrent().createTokenRefreshRequest(),
-            (response, ex) -> {
-                mStateManager.updateAfterTokenResponse(response, ex);
+                mStateManager.getCurrent().createTokenRefreshRequest(),
+                (response, ex) -> {
+                    mStateManager.updateAfterTokenResponse(response, ex);
 
-                callback.onTokenRequestCompleted(response, ex);
-            });
+                    callback.onTokenRequestCompleted(response, ex);
+                });
     }
 
     public void exchangeAuthorizationCode(AuthorizationResponse authResponse, AuthorizationService.TokenResponseCallback callback) {
         performTokenRequest(
-            authResponse.createTokenExchangeRequest(),
-            (response, ex) -> {
-                mStateManager.updateAfterTokenResponse(response, ex);
+                authResponse.createTokenExchangeRequest(),
+                (response, ex) -> {
+                    mStateManager.updateAfterTokenResponse(response, ex);
 
-                callback.onTokenRequestCompleted(response, ex);
-            });
+                    callback.onTokenRequestCompleted(response, ex);
+                });
     }
 
     private void performTokenRequest(
-        TokenRequest request,
-        AuthorizationService.TokenResponseCallback callback) {
+            TokenRequest request,
+            AuthorizationService.TokenResponseCallback callback) {
         ClientAuthentication clientAuthentication;
         try {
             clientAuthentication = mStateManager.getCurrent().getClientAuthentication();
@@ -256,9 +251,9 @@ public class AuthManager {
         }
 
         mAuthService.performTokenRequest(
-            request,
-            clientAuthentication,
-            callback);
+                request,
+                clientAuthentication,
+                callback);
     }
 
     /**
@@ -268,9 +263,9 @@ public class AuthManager {
      */
     public void fetchUserInfo(UserInfoListener userInfoListener) {
         AuthorizationServiceDiscovery discovery =
-            mStateManager.getCurrent()
-                .getAuthorizationServiceConfiguration()
-                .discoveryDoc;
+                mStateManager.getCurrent()
+                        .getAuthorizationServiceConfiguration()
+                        .discoveryDoc;
 
         URL userInfoEndpoint;
         try {
@@ -282,11 +277,11 @@ public class AuthManager {
         mExecutor.submit(() -> {
             try {
                 HttpURLConnection conn =
-                    (HttpURLConnection) userInfoEndpoint.openConnection();
+                        (HttpURLConnection) userInfoEndpoint.openConnection();
                 conn.setRequestProperty("Authorization", "Bearer " + getState().getAccessToken());
                 conn.setInstanceFollowRedirects(false);
                 String response = Okio.buffer(Okio.source(conn.getInputStream()))
-                    .readString(StandardCharsets.UTF_8);
+                        .readString(StandardCharsets.UTF_8);
                 userInfoListener.onCompleted(new JSONObject(response), null);
             } catch (IOException | JSONException ex) {
                 userInfoListener.onCompleted(null, ex);
@@ -294,13 +289,38 @@ public class AuthManager {
         });
     }
 
+    private Uri getEndSessionEndpoint() {
+        if (endSessionEndpoint == null) {
+            try {
+                AuthState currentState = mStateManager.getCurrent();
+                AuthorizationServiceConfiguration config = currentState.getAuthorizationServiceConfiguration();
+                String endSessionString = config.discoveryDoc.docJson.getString("end_session_endpoint");
+                this.endSessionEndpoint = Uri.parse(endSessionString);
+            } catch (JSONException e) {
+                e.printStackTrace();
+            }
+        }
+        return endSessionEndpoint;
+    }
 
-    public void signOut() {
+
+    public void ssoSignOut(AuthenticateListener authenticateListener) {
+        String idToken = mStateManager.getCurrent().getIdToken();
+        String endSessionUriString = getEndSessionEndpoint().toString();
+        String signOutRedirectUriString = Config.SIGN_OUT_REDIRECT_URI;
+        Uri endSessionFinalUri = Uri.parse(String.format("%s?id_token_hint=%s&post_logout_redirect_uri=%s", endSessionUriString, idToken, signOutRedirectUriString));
+
+        Intent signOutIntent =  warmUpBrowser(endSessionFinalUri).intent;
+
+        authenticateListener.startActivityForResult(signOutIntent, RC_SIGN_OUT);
+    }
+
+    public void localSignOut() {
         // discard the authorization and token state, but retain the configuration to save from retrieving it again.
         // Note: this does not clear your browser session for SSO reasons
         AuthState currentState = mStateManager.getCurrent();
         AuthState clearedState =
-            new AuthState(currentState.getAuthorizationServiceConfiguration());
+                new AuthState(currentState.getAuthorizationServiceConfiguration());
         mStateManager.replace(clearedState);
     }
 

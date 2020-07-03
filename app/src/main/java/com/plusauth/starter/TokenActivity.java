@@ -8,6 +8,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.google.android.material.snackbar.Snackbar;
@@ -196,12 +197,22 @@ public class TokenActivity extends AppCompatActivity {
     }
 
     private void signOut() {
-        authManager.signOut();
+        // Will launch signout page in custom tabs for sso signout
+        authManager.ssoSignOut(this::startActivityForResult);
+    }
 
-        Intent mainIntent = new Intent(this, LoginActivity.class);
-        mainIntent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        startActivity(mainIntent);
-        finish();
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+
+            Log.d(TAG, "Sign out successful");
+            // If you want to use sso signout make sure to call localSignOut after the sso signout
+            // process completely finishes
+            authManager.localSignOut();
+            Intent mainIntent = new Intent(this, LoginActivity.class);
+            mainIntent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            startActivity(mainIntent);
+            finish();
     }
 
     private void onAuthResponse(TokenResponse tokenResponse, AuthorizationException ex) {
