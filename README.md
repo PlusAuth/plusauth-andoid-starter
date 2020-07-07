@@ -17,6 +17,7 @@ Before running the project, you must first follow these steps:
 3. Go to details page of the client that you've just created and set the following fields as:
 
 - Redirect Uris:  com.plusauth.starter:/oauth2redirect 
+- Post Logout Uris: com.plusauth.starter:/signout
 
 Finally write down your Client Id and Tenant name for app configuration on the next step.
 
